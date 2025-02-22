@@ -1,10 +1,13 @@
 export type Listener = () => void;
 export type ClearHarmonicInterval = () => void;
+export type BucketID = string | number;
 
 export interface Bucket {
+  id?: BucketID;
   ms: number;
-  timer: any;
-  listeners: Record<number, Listener>;
+  timer: ReturnType<typeof setInterval>;
+  listeners: Map<number, Listener>;
+  listenerCount: number;
 }
 
 export interface TimerReference {
@@ -13,57 +16,63 @@ export interface TimerReference {
 }
 
 let counter = 0;
-const buckets: Record<number, Bucket> = {};
+const buckets: Record<BucketID, Bucket> = {};
 
-export const setHarmonicInterval = (fn: Listener, ms: number): TimerReference => {
-  const id = counter++;
+export const setHarmonicInterval = (fn: Listener, ms: number, bucketID?: BucketID): TimerReference => {
+  const id = counter + 1;
+  const _bucketID = bucketID ? `${ms}-${bucketID}` : ms;
 
-  if (buckets[ms]) {
-    buckets[ms].listeners[id] = fn;
+  if (buckets[_bucketID]) {
+    buckets[_bucketID].listeners.set(id, fn);
+    buckets[_bucketID].listenerCount++;
   } else {
     const timer = setInterval(() => {
-      const {listeners} = buckets[ms];
+      const { listeners } = buckets[_bucketID];
       let didThrow = false;
-      let lastError: any;
+      const errors: Record<number, { error: Error, listener: string, ms: number }> = {};
 
-      for (const listener of Object.values(listeners)) {
+      for (const [listenerID, listener] of listeners.entries()) {
         try {
           listener();
         } catch (error) {
           didThrow = true;
-          lastError = error;
+          const _id = Number(listenerID);
+          if (!isNaN(_id)) errors[_id] = {
+            error: error as unknown as Error,
+            listener: listener.name,
+            ms,
+          };
         }
       }
 
-      if (didThrow) throw lastError;
+      if (didThrow) throw errors;
     }, ms);
 
-    buckets[ms] = {
+    buckets[_bucketID] = {
+      id: _bucketID,
       ms,
       timer,
-      listeners: {
-        [id]: fn,
-      },
+      listeners: new Map([[id, fn]]),
+      listenerCount: 1,
     };
   }
 
+  counter++;
   return {
-    bucket: buckets[ms],
+    bucket: buckets[_bucketID],
     id,
   };
 };
 
-export const clearHarmonicInterval = ({bucket, id}: TimerReference): void => {
-  delete bucket.listeners[id];
-
-  let hasListeners = false;
-  for (const listener in bucket.listeners) {
-    hasListeners = true;
-    break;
+export const clearHarmonicInterval = ({ bucket, id }: TimerReference): void => {
+  if (bucket.listeners.has(id)) {
+    bucket.listeners.delete(id);
+    bucket.listenerCount--;
   }
 
-  if (!hasListeners) {
+  if (bucket.listenerCount === 0) {
     clearInterval(bucket.timer);
-    delete buckets[bucket.ms];
+    if (bucket.id) delete buckets[bucket.id];
+    else delete buckets[bucket.ms];
   }
 };
