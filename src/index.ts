@@ -3,8 +3,9 @@ export type ClearHarmonicInterval = () => void;
 
 export interface Bucket {
   ms: number;
-  timer: any;
-  listeners: Record<number, Listener>;
+  timer: ReturnType<typeof setInterval>;
+  listeners: Map<number, Listener>;
+  listenerCount: number;
 }
 
 export interface TimerReference {
@@ -19,31 +20,36 @@ export const setHarmonicInterval = (fn: Listener, ms: number): TimerReference =>
   const id = counter++;
 
   if (buckets[ms]) {
-    buckets[ms].listeners[id] = fn;
+    buckets[ms].listeners.set(id, fn);
+    buckets[ms].listenerCount++;
   } else {
     const timer = setInterval(() => {
       const {listeners} = buckets[ms];
       let didThrow = false;
-      let lastError: any;
+      const errors: Record<number, { error: Error, listener: string, ms: number }> = {};
 
-      for (const listener of Object.values(listeners)) {
+      for (const [listenerID, listener] of listeners.entries()) {
         try {
           listener();
         } catch (error) {
           didThrow = true;
-          lastError = error;
+          const _id = Number(listenerID);
+          if (!isNaN(_id)) errors[_id] = {
+            error: error as unknown as Error,
+            listener: listener.name,
+            ms,
+          };
         }
       }
 
-      if (didThrow) throw lastError;
+      if (didThrow) throw errors;
     }, ms);
 
     buckets[ms] = {
       ms,
       timer,
-      listeners: {
-        [id]: fn,
-      },
+      listeners: new Map([[id, fn]]),
+      listenerCount: 1,
     };
   }
 
@@ -54,15 +60,12 @@ export const setHarmonicInterval = (fn: Listener, ms: number): TimerReference =>
 };
 
 export const clearHarmonicInterval = ({bucket, id}: TimerReference): void => {
-  delete bucket.listeners[id];
-
-  let hasListeners = false;
-  for (const listener in bucket.listeners) {
-    hasListeners = true;
-    break;
+  if (bucket.listeners.has(id)) {
+    bucket.listeners.delete(id);
+    bucket.listenerCount--;
   }
 
-  if (!hasListeners) {
+  if (bucket.listenerCount === 0) {
     clearInterval(bucket.timer);
     delete buckets[bucket.ms];
   }
